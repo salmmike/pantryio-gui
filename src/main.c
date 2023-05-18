@@ -1,5 +1,6 @@
 #include <gtk/gtk.h>
-#define G_APPLICATION_DEFAULT_FLAGS 0
+
+#define G_APPLICATION_DEFAULT_FLAGS (GApplicationFlags) 0
 
 static void
 print_hello (GtkWidget *widget,
