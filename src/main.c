@@ -5,39 +5,51 @@
 #define G_APPLICATION_DEFAULT_FLAGS (GApplicationFlags) 0
 #define STRINT_MAX_COUNT 255
 
-struct EntryData
+#define COMMUNICATOR_UNIX_ADDRESS "unix:abstract=pantryiocommunication"
+
+/**
+ * @enum PantryState
+ * @brief Info about an item status in pantry.
+ */
+enum ItemState
 {
-  char* text;
-  int status;
+  out_of_stock = 0,
+  in_stock = 1,
 };
 
-
-static void
-print_hello (GtkWidget *widget,
-             gpointer   data)
+/**
+ * @struct PantryItem
+ * @brief Holds name and status of a pantry item
+ */
+struct PantryItem
 {
-  g_print ("Hello World\n");
-}
+  char* name;            /**< PantryItem#name contains the name of the product.*/
+  enum ItemState status; /**< PantryItem#status cantains a ItemState enum that tells if the item is in stock or not.*/
+};
 
-gchar*
-get_pantry_status()
+/**
+ * @brief Ask the DBus interface for current pantry data. Caller must free the returned pointer.
+ * @return a string containing item names and their status.
+ * The name and status are separated by an equal sign (=) and the items by a comma (,)
+ */
+gchar* get_pantry_dbus_status()
 {
     GDBusConnection *connection;
     const gchar *response;
     GVariant *value;
     GError *error;
-    gchar *opt_address = "unix:abstract=pantryiocommunication";
+    gchar *opt_address = COMMUNICATOR_UNIX_ADDRESS;
 
     error = NULL;
     connection = g_dbus_connection_new_for_address_sync(opt_address,
-                                                       G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT,
-                                                       NULL, /* GDBusAuthObserver */
-                                                       NULL, /* GCancellable */
-                                                       &error);
+                                                        G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT,
+                                                        NULL, /* GDBusAuthObserver */
+                                                        NULL, /* GCancellable */
+                                                        &error);
     if (connection == NULL) {
           g_printerr ("Error connecting to D-Bus address %s: %s\n", opt_address, error->message);
           g_error_free (error);
-          return EXIT_FAILURE;
+          return NULL;
     }
 
     value = g_dbus_connection_call_sync (connection,
@@ -53,9 +65,9 @@ get_pantry_status()
                                         &error);
 
     if (value == NULL) {
-          g_printerr ("Error invoking HelloWorld(): %s\n", error->message);
+          g_printerr ("Error invoking GetStatus(): %s\n", error->message);
           g_error_free (error);
-        return EXIT_FAILURE;
+        return NULL;
     }
 
     g_variant_get(value, "(&s)", &response);
@@ -66,98 +78,136 @@ get_pantry_status()
     return ret;
 }
 
-struct EntryData* get_data()
+/**
+ * @brief Free a PantryItem array.
+ */
+void pantry_item_free(struct PantryItem* items)
 {
-  struct EntryData* data = malloc(STRINT_MAX_COUNT * sizeof(struct EntryData));
+  size_t i = 0;
+
+  while (items[i].name[0] != 0) {
+    free(items[i].name);
+    ++i;
+  }
+  free(items[i].name);
+  free(items);
+}
+
+/**
+ * @brief Get an array of PantryItem data from the DBus interface.
+ * @param data mallocs the PantryItem array here.
+ * @return PantryItem count
+ */
+size_t get_pantry_data(struct PantryItem **out_data)
+{
+  struct PantryItem *data = malloc(STRINT_MAX_COUNT * sizeof(struct PantryItem));
 
   size_t str_begin = 0;
   size_t str_end = 0;
   size_t str_count = 0;
+  gchar* status_data = NULL;
 
-  const gchar* status_data = get_pantry_status();
+  status_data = get_pantry_dbus_status();
 
   for (size_t i = 0; i < STRINT_MAX_COUNT; ++i) {
     ++str_count;
-    data[i].text = calloc(255, sizeof(char));
+    data[i].name = calloc(255, sizeof(char));
 
     while (status_data[str_end] && status_data[str_end] != ',') {
       ++str_end;
     }
 
-    memcpy(data[i].text, &status_data[str_begin], (str_end - str_begin - 2) * sizeof(char));
+    memcpy(data[i].name, &status_data[str_begin], (str_end - str_begin - 2) * sizeof(char));
 
     data[i].status = status_data[str_end - 1] - '0';
 
     if (status_data[str_end] == 0) {
-      data[i+1].text = calloc(255, sizeof(char));
+      data[i+1].name = calloc(255, sizeof(char));
       break;
     }
-
     str_end = str_end + 1;
     str_begin = str_end;
   }
 
   free(status_data);
 
-  return data;
+  *out_data = data;
+  return str_count;
 }
 
-void create_button(GtkWidget* box, struct EntryData* label_info)
+/*
+ * @brief Creates a button inside @box
+ * @param box GtkWidget* to a gtk_box
+ * @param label_info PantryItem* with name and status.
+ */
+void create_button(GtkWidget*         box,
+                   struct PantryItem* label_info)
 {
   GtkWidget *button;
-  button = gtk_button_new_with_label(label_info->text);
+  button = gtk_button_new_with_label(label_info->name);
+
+  if (label_info->status == out_of_stock) {
+    GtkWidget *label = gtk_button_get_child(GTK_BUTTON(button));
+    PangoAttribute *textColor = pango_attr_foreground_new(65535,0,0);
+    PangoAttrList *const Attrs = pango_attr_list_new();
+    pango_attr_list_insert(Attrs, textColor);
+    gtk_label_set_attributes((GtkLabel *)label, Attrs);
+  }
+
   gtk_box_append(GTK_BOX(box), button);
 }
 
-GtkWidget* create_window(GtkApplication *app)
+/*
+ * @brief Create a window for GthApplication* app
+ */
+GtkWidget* create_window(GtkApplication *app,
+                         int             width,
+                         int             height)
 {
   GtkWidget *window;
   window = gtk_application_window_new (app);
   gtk_window_set_title (GTK_WINDOW (window), "Window");
-  gtk_window_set_default_size (GTK_WINDOW (window), 200, 200);
+  gtk_window_set_default_size(GTK_WINDOW (window), width, height);
   return window;
 }
 
-static void
-activate (GtkApplication *app,
-          gpointer        user_data)
+/*
+ * @brief Constructs window with data about pantry items.
+ * Queries the data from the pantry-io-communication DBus interface.
+ */
+static void activate(GtkApplication *app,
+                     gpointer        user_data)
 {
   GtkWidget *window;
   GtkWidget *box;
 
-  window = create_window(app);
+  window = create_window(app, 200, 200);
 
-  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-  gtk_box_set_spacing(GTK_BOX(box), 10);
-  gtk_widget_set_halign (box, GTK_ALIGN_CENTER);
-  gtk_widget_set_valign (box, GTK_ALIGN_CENTER);
+  box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+  gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
 
-  gtk_window_set_child (GTK_WINDOW (window), box);
+  gtk_window_set_child(GTK_WINDOW (window), box);
 
-  struct EntryData* data = get_data();
+  struct PantryItem* data;
+  size_t lenght = get_pantry_data(&data);
 
-  for (size_t i = 0; i < STRINT_MAX_COUNT; ++i) {
-    if (data[i].text[0]) {
-      create_button(box, &data[i]);
-    } else {
-      break;
-    }
+  for (size_t i = 0; i < lenght; ++i) {
+    create_button(box, &data[i]);
   }
-
   gtk_widget_show (window);
 }
 
-int
-main (int    argc,
-      char **argv)
+int main(int    argc,
+         char **argv)
 {
   GtkApplication *app;
   int status;
 
-  app = gtk_application_new ("org.gtk.example", G_APPLICATION_DEFAULT_FLAGS);
-  g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
-  status = g_application_run (G_APPLICATION (app), argc, argv);
-  g_object_unref (app);
+  app = gtk_application_new("org.gtk.example", G_APPLICATION_DEFAULT_FLAGS);
+  g_signal_connect(app, "activate", G_CALLBACK (activate), NULL);
+  status = g_application_run(G_APPLICATION (app), argc, argv);
+  g_object_unref(app);
 
   return status;
 }
